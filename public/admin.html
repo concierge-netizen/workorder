@@ -143,6 +143,21 @@ textarea{resize:vertical;min-height:72px;line-height:1.6;}
       </div>
     </div>
 
+    <!-- Monday Connection -->
+    <div class="card" id="mondayCard">
+      <div class="slabel">monday.com Connection</div>
+      <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;">
+        <div class="form-group" style="flex:1;min-width:200px;margin-bottom:0;">
+          <label>monday Item ID <span style="font-size:9px;color:var(--ink-light);letter-spacing:0;text-transform:none;">(paste to prefill or link)</span></label>
+          <input type="text" id="mondayItemId" placeholder="e.g. 4550650855" oninput="onMondayIdInput()"/>
+        </div>
+        <button class="btn btn-sm btn-green" onclick="fetchFromMonday()" id="fetchMondayBtn">&#8595; Pull from monday</button>
+        <button class="btn btn-sm btn-primary" onclick="pushToMonday()" id="pushMondayBtn">&#8593; Push to monday</button>
+        <button class="btn btn-sm" onclick="createInMonday()" id="createMondayBtn">+ Create in monday</button>
+      </div>
+      <div id="mondayStatus" style="font-family:'DM Mono',monospace;font-size:10px;margin-top:10px;min-height:16px;"></div>
+    </div>
+
     <div class="card">
       <div class="slabel">Job Details</div>
       <div class="form-row fr2"><div class="form-group"><label>Job / Event Name</label><input type="text" id="woName" placeholder="e.g. GHOST Venetian Setup"/></div><div class="form-group"><label>Account / Client</label><input type="text" id="woAccount" placeholder="e.g. GHOST Beverage"/></div></div>
@@ -283,6 +298,16 @@ textarea{resize:vertical;min-height:72px;line-height:1.6;}
   </div>
 </div>
 
+<!-- Group Picker Modal -->
+<div class="modal-overlay hidden" id="groupModal">
+  <div class="modal" style="width:460px;">
+    <div class="modal-title">Create in monday — Choose Group</div>
+    <div style="font-family:'DM Mono',monospace;font-size:10px;color:var(--ink-light);margin-bottom:16px;">Which group on Operations 2026 should this item land in?</div>
+    <div id="groupList" style="display:flex;flex-direction:column;gap:8px;max-height:300px;overflow-y:auto;"></div>
+    <div class="modal-actions"><button class="btn" onclick="closeGroupModal()">Cancel</button></div>
+  </div>
+</div>
+
 <!-- Send Email Modal -->
 <div class="modal-overlay hidden" id="sendModal">
   <div class="modal" style="width:600px;">
@@ -401,6 +426,10 @@ function populateBuilder(){
   document.getElementById('woTeardownNotes').value=wo.teardownNotes||'';
   document.getElementById('woNotes').value=wo.notes||'';
   document.getElementById('copyLinkBtn').style.display='inline-flex';
+  if(wo.mondayItemId){
+    document.getElementById('mondayItemId').value=wo.mondayItemId;
+    setMondayStatus('Linked to monday item #'+wo.mondayItemId, false);
+  }
   document.getElementById('sendCrewBtn').style.display='inline-flex';
   renderToolsList();renderJobSupplies();
 }
@@ -431,6 +460,14 @@ async function saveWorkOrder(){
     var res=await fetch('/.netlify/functions/save-workorder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(wo)});
     var r=await res.json();if(!res.ok||r.error)throw new Error(r.error||'Save failed');
     document.getElementById('builderTitle').textContent=wo.name||'Work Order';
+    // Auto-sync to monday if linked
+    var linkedId=document.getElementById('mondayItemId').value.trim();
+    if(linkedId){
+      fetch('/.netlify/functions/monday-sync',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'update',itemId:linkedId,name:wo.name,account:wo.account,activityType:wo.activityType,status:wo.status,eventDate:wo.eventDate,startTime:wo.startTime,endTime:wo.endTime,venue:wo.venue,address:wo.address,contactName:wo.contactName,setupNotes:wo.setupNotes,teardownNotes:wo.teardownNotes,notes:wo.notes})})
+        .then(function(r){return r.json();})
+        .then(function(r){if(r.ok)setMondayStatus('✓ Synced to monday #'+linkedId,false);})
+        .catch(function(){});
+    }
     document.getElementById('copyLinkBtn').style.display='inline-flex';
     document.getElementById('sendCrewBtn').style.display='inline-flex';
     setSaveStatus('✓ Saved');
@@ -739,6 +776,156 @@ async function doSendEmail(){
 document.getElementById('sendModal').addEventListener('click',function(e){if(e.target===this)closeSendModal();});
 document.getElementById('catalogModal').addEventListener('click',function(e){if(e.target===this)closeCatalogModal();});
 document.getElementById('supplyModal').addEventListener('click',function(e){if(e.target===this)closeSupplyModal();});
+
+// ══════════════════════════════════════════════════════════════════
+// MONDAY INTEGRATION
+// ══════════════════════════════════════════════════════════════════
+function setMondayStatus(msg, isErr) {
+  var el = document.getElementById('mondayStatus');
+  el.textContent = msg;
+  el.style.color = isErr ? 'var(--error)' : isErr === false ? 'var(--green-dim)' : 'var(--ink-light)';
+}
+
+function onMondayIdInput() {
+  var val = document.getElementById('mondayItemId').value.trim();
+  document.getElementById('fetchMondayBtn').style.opacity = val ? '1' : '0.5';
+  document.getElementById('pushMondayBtn').style.opacity = val ? '1' : '0.5';
+}
+
+async function fetchFromMonday() {
+  var id = document.getElementById('mondayItemId').value.trim();
+  if (!id) { alert('Enter a monday item ID first.'); return; }
+  setMondayStatus('Fetching from monday…');
+  try {
+    var res = await fetch('/.netlify/functions/monday-sync?itemId=' + encodeURIComponent(id));
+    var data = await res.json();
+    if (!res.ok || data.error) throw new Error(data.error || 'Fetch failed');
+
+    // Prefill all builder fields
+    if (data.name)         document.getElementById('woName').value        = data.name;
+    if (data.account)      document.getElementById('woAccount').value     = data.account;
+    if (data.eventDate)    document.getElementById('woDate').value        = data.eventDate;
+    if (data.startTime)    document.getElementById('woStart').value       = data.startTime;
+    if (data.endTime)      document.getElementById('woEnd').value         = data.endTime;
+    if (data.activityType) document.getElementById('woType').value        = data.activityType;
+    if (data.status)       document.getElementById('woStatus').value      = data.status;
+    if (data.venue)        document.getElementById('woVenue').value       = data.venue;
+    if (data.address)      document.getElementById('woAddress').value     = data.address;
+    if (data.contactName)  document.getElementById('woContact').value     = data.contactName;
+    if (data.contactPhone) document.getElementById('woPhone').value       = data.contactPhone;
+    if (data.setupNotes)   document.getElementById('woSetupNotes').value  = data.setupNotes;
+    if (data.teardownNotes)document.getElementById('woTeardownNotes').value = data.teardownNotes;
+    if (data.notes)        document.getElementById('woNotes').value       = data.notes;
+
+    // Store monday link on current work order
+    if (!currentWO) currentWO = collectWorkOrder();
+    currentWO.mondayItemId = id;
+    currentWO.mondayGroupId = data.groupId;
+
+    document.getElementById('builderTitle').textContent = data.name || 'Work Order';
+    setMondayStatus('✓ Prefilled from monday item #' + id + (data.groupTitle ? ' (' + data.groupTitle + ')' : ''), false);
+  } catch(err) {
+    setMondayStatus('✗ ' + err.message, true);
+  }
+}
+
+async function pushToMonday() {
+  var id = document.getElementById('mondayItemId').value.trim();
+  if (!id) { alert('Enter a monday item ID first.'); return; }
+  var wo = collectWorkOrder();
+  currentWO = wo;
+  setMondayStatus('Pushing to monday…');
+  try {
+    var res = await fetch('/.netlify/functions/monday-sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: 'update',
+        itemId: id,
+        name:          wo.name,
+        account:       wo.account,
+        activityType:  wo.activityType,
+        status:        wo.status,
+        eventDate:     wo.eventDate,
+        startTime:     wo.startTime,
+        endTime:       wo.endTime,
+        venue:         wo.venue,
+        address:       wo.address,
+        contactName:   wo.contactName,
+        setupNotes:    wo.setupNotes,
+        teardownNotes: wo.teardownNotes,
+        notes:         wo.notes
+      })
+    });
+    var result = await res.json();
+    if (!res.ok || result.error) throw new Error(result.error || 'Push failed');
+    wo.mondayItemId = id;
+    currentWO = wo;
+    setMondayStatus('✓ Updated monday item #' + id, false);
+  } catch(err) {
+    setMondayStatus('✗ ' + err.message, true);
+  }
+}
+
+async function createInMonday() {
+  var wo = collectWorkOrder();
+  if (!wo.name) { alert('Enter a job name before creating in monday.'); return; }
+  // Load groups
+  setMondayStatus('Loading monday groups…');
+  try {
+    var res = await fetch('/.netlify/functions/monday-sync?groups=1');
+    var groups = await res.json();
+    if (!res.ok || groups.error) throw new Error(groups.error || 'Could not load groups');
+    // Render group picker
+    var list = document.getElementById('groupList');
+    list.innerHTML = '';
+    groups.forEach(function(g) {
+      var div = document.createElement('div');
+      div.style.cssText = 'display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border:1px solid #e8e8e4;border-radius:6px;cursor:pointer;margin-bottom:6px;';
+      div.innerHTML = '<div style="font-size:13px;font-weight:500;">' + esc(g.title) + '</div><div style="font-family:monospace;font-size:9px;color:#999;">' + esc(g.id) + '</div>';
+      (function(gid, gtitle){ div.addEventListener('click', function(){ confirmCreateInMonday(gid, gtitle); }); })(g.id, g.title);
+      list.appendChild(div);
+    });
+        document.getElementById('groupModal').classList.remove('hidden');
+    setMondayStatus('');
+  } catch(err) {
+    setMondayStatus('✗ ' + err.message, true);
+  }
+}
+
+async function confirmCreateInMonday(groupId, groupTitle) {
+  closeGroupModal();
+  var wo = collectWorkOrder();
+  setMondayStatus('Creating monday item in ' + groupTitle + '…');
+  try {
+    var res = await fetch('/.netlify/functions/monday-sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action:       'create',
+        name:         wo.name,
+        groupId:      groupId,
+        account:      wo.account,
+        activityType: wo.activityType,
+        eventDate:    wo.eventDate,
+        startTime:    wo.startTime
+      })
+    });
+    var result = await res.json();
+    if (!res.ok || result.error) throw new Error(result.error || 'Create failed');
+    // Link back
+    document.getElementById('mondayItemId').value = result.itemId;
+    if (!currentWO) currentWO = wo;
+    currentWO.mondayItemId = result.itemId;
+    currentWO.mondayGroupId = groupId;
+    setMondayStatus('✓ Created monday item #' + result.itemId + ' in ' + groupTitle, false);
+  } catch(err) {
+    setMondayStatus('✗ ' + err.message, true);
+  }
+}
+
+function closeGroupModal() { document.getElementById('groupModal').classList.add('hidden'); }
+document.getElementById('groupModal').addEventListener('click', function(e) { if(e.target===this) closeGroupModal(); });
 
 function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 </script>
