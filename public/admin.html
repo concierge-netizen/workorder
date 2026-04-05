@@ -232,7 +232,10 @@ textarea{resize:vertical;min-height:72px;line-height:1.6;}
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:8px;">
       <div class="slabel" style="margin:0;flex:1;">Client Supplies Quote</div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-sm" onclick="loadQuoteFromWorkOrder(currentWorkOrder)" style="opacity:0.8;">&#8617; Load from Work Order</button>
         <button class="btn btn-sm" onclick="copyQuoteText()">&#8266; Copy</button>
+        <button class="btn btn-sm btn-primary" id="qv-internal" onclick="setQuoteView('internal')">Internal View</button>
+        <button class="btn btn-sm" id="qv-external" onclick="setQuoteView('external')">Client View</button>
         <button class="btn btn-sm btn-green" onclick="openSendModal('client')">&#9993; Email to Client</button>
         <button class="btn btn-sm" onclick="window.print()">&#8595; Print</button>
       </div>
@@ -273,7 +276,9 @@ textarea{resize:vertical;min-height:72px;line-height:1.6;}
     </div>
     <div id="quotePreviewWrap" style="display:none;">
       <div class="quote-preview" id="quotePreview"></div>
-    </div>
+    
+    <div id="quoteSummaryPanel" style="margin-top:0;"></div>
+</div>
   </div>
 </div>
 
@@ -395,7 +400,7 @@ function genWOId(){return 'WO-'+new Date().getFullYear()+'-'+String(Math.floor(M
 function newWorkOrder(){
   currentWO={id:genWOId(),tools:[],supplies:[]};
   populateBuilder();
-  showTab('builder');
+  currentWorkOrder=wo;showTab('builder');
 }
 
 async function editWorkOrder(id){
@@ -1061,6 +1066,121 @@ function saveInvItem(){
     };
   }
 })();
+
+
+// ── UNIFIED QUOTE FROM WORK ORDER ────────────────────────────
+// Call this after loading a work order to pre-populate the quote
+function loadQuoteFromWorkOrder(wo) {
+  if (!wo || !wo.supplies || !wo.supplies.length) return;
+
+  // Set client + reference from work order
+  var clientEl = document.getElementById('quoteClient');
+  var refEl    = document.getElementById('quoteRef');
+  if (clientEl && !clientEl.value) clientEl.value = wo.account || wo.client || '';
+  if (refEl    && !refEl.value)    refEl.value    = wo.name    || '';
+
+  // Map work order supplies to quote items using catalog lookup
+  var added = 0;
+  wo.supplies.forEach(function(s) {
+    // Find in catalog by name or catalogId
+    var catItem = catalog.items.find(function(c) {
+      return c.id === s.catalogId || c.name.toLowerCase() === (s.name||'').toLowerCase();
+    });
+    if (!catItem) return;
+
+    // Don't duplicate
+    var exists = quoteItems.find(function(q) { return q.catalogId === catItem.id; });
+    if (exists) return;
+
+    quoteItems.push({
+      catalogId: catItem.id,
+      name:      catItem.name,
+      qty:       parseFloat(s.qty) || 1,
+      unit:      catItem.unit || s.unit || '',
+      unitCost:  parseFloat(catItem.unitCost) || 0,
+      category:  catItem.category || ''
+    });
+    added++;
+  });
+
+  if (added > 0) {
+    renderQuote && renderQuote();
+    setSaveStatus(added + ' supplies loaded into quote from work order');
+  }
+}
+
+// ── QUOTE INTERNAL/EXTERNAL TOGGLE ───────────────────────────
+var quoteView = 'internal'; // 'internal' | 'external'
+
+function setQuoteView(v) {
+  quoteView = v;
+  document.getElementById('qv-internal').classList.toggle('btn-primary', v === 'internal');
+  document.getElementById('qv-external').classList.toggle('btn-primary', v === 'external');
+  document.getElementById('qv-internal').classList.toggle('btn-sm', true);
+  document.getElementById('qv-external').classList.toggle('btn-sm', true);
+  renderQuoteSummary();
+}
+
+function renderQuoteSummary() {
+  var markup   = parseFloat(document.getElementById('quoteMarkup') ? document.getElementById('quoteMarkup').value : 25) || 0;
+  var summary  = document.getElementById('quoteSummaryPanel');
+  if (!summary) return;
+
+  var subtotal = quoteItems.reduce(function(sum, qi) { return sum + (qi.unitCost || 0) * qi.qty; }, 0);
+  var markupAmt = subtotal * (markup / 100);
+  var clientTotal = subtotal + markupAmt;
+
+  if (quoteView === 'internal') {
+    summary.innerHTML =
+      '<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-top:12px;">' +
+        '<div style="background:#f7f7f5;border:1px solid var(--rule);border-radius:6px;padding:12px;">' +
+          '<div style="font-family:\'DM Mono\',monospace;font-size:9px;letter-spacing:0.18em;text-transform:uppercase;color:var(--ink-light);margin-bottom:4px;">Our Cost</div>' +
+          '<div style="font-size:18px;font-weight:600;color:var(--ink);">$' + subtotal.toFixed(2) + '</div>' +
+        '</div>' +
+        '<div style="background:#f7f7f5;border:1px solid var(--rule);border-radius:6px;padding:12px;">' +
+          '<div style="font-family:\'DM Mono\',monospace;font-size:9px;letter-spacing:0.18em;text-transform:uppercase;color:var(--ink-light);margin-bottom:4px;">Markup (' + markup + '%)</div>' +
+          '<div style="font-size:18px;font-weight:600;color:#f39c12;">+$' + markupAmt.toFixed(2) + '</div>' +
+        '</div>' +
+        '<div style="background:#e8f5e9;border:1px solid #a5d6a7;border-radius:6px;padding:12px;">' +
+          '<div style="font-family:\'DM Mono\',monospace;font-size:9px;letter-spacing:0.18em;text-transform:uppercase;color:#388e3c;margin-bottom:4px;">Client Total</div>' +
+          '<div style="font-size:18px;font-weight:600;color:#2e7d32;">$' + clientTotal.toFixed(2) + '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="margin-top:10px;padding:10px 14px;background:#fff8e1;border:1px solid #ffe082;border-radius:6px;font-size:12px;color:#e65100;">' +
+        '&#128274; Internal view — shows cost breakdown. Client sees only the total.' +
+      '</div>';
+  } else {
+    summary.innerHTML =
+      '<div style="background:#f7f7f5;border:1px solid var(--rule);border-radius:6px;padding:16px;margin-top:12px;display:flex;align-items:center;justify-content:space-between;">' +
+        '<div>' +
+          '<div style="font-family:\'DM Mono\',monospace;font-size:9px;letter-spacing:0.18em;text-transform:uppercase;color:var(--ink-light);margin-bottom:4px;">Total</div>' +
+          '<div style="font-size:22px;font-weight:600;color:var(--ink);">$' + clientTotal.toFixed(2) + '</div>' +
+        '</div>' +
+        '<div style="font-family:\'DM Mono\',monospace;font-size:10px;color:var(--ink-light);">Client View</div>' +
+      '</div>' +
+      '<div style="margin-top:10px;padding:10px 14px;background:#e8f5e9;border:1px solid #a5d6a7;border-radius:6px;font-size:12px;color:#2e7d32;">' +
+        '&#128065; External view — this is what your client sees. No cost breakdown visible.' +
+      '</div>';
+  }
+}
+
+// Patch renderQuote to also call renderQuoteSummary
+var _origRenderQuote = window.renderQuote;
+if (typeof _origRenderQuote === 'function') {
+  window.renderQuote = function() {
+    _origRenderQuote();
+    renderQuoteSummary();
+  };
+}
+
+// Patch showTab to render summary when switching to quote
+var _origShowTabQ = window.showTab;
+if (typeof _origShowTabQ === 'function') {
+  window.showTab = function(tab) {
+    _origShowTabQ(tab);
+    if (tab === 'quote') renderQuoteSummary();
+  };
+}
 
 </script>
 
