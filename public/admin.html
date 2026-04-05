@@ -114,6 +114,7 @@ textarea{resize:vertical;min-height:72px;line-height:1.6;}
   <div class="nav-tab" id="tab-builder" onclick="showTab('builder')">Builder</div>
   <div class="nav-tab" id="tab-catalog" onclick="showTab('catalog')">Supplies Catalog</div>
   <div class="nav-tab" id="tab-quote" onclick="showTab('quote')">Client Quote</div>
+  <div class="nav-tab" id="tab-inventory" onclick="showTab('inventory')">Inventory</div>
 </div>
 
 <!-- WORK ORDERS -->
@@ -928,6 +929,247 @@ function closeGroupModal() { document.getElementById('groupModal').classList.add
 document.getElementById('groupModal').addEventListener('click', function(e) { if(e.target===this) closeGroupModal(); });
 
 function esc(s){return(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+
+// ── INVENTORY ──────────────────────────────────────────────────
+var inventory={items:[]};
+var invEditIdx=null;
+
+async function loadInventory(){
+  try{var r=await fetch('/.netlify/functions/inventory');var d=await r.json();inventory=d&&d.items?d:{items:[]};}
+  catch(e){inventory={items:[]};}
+  renderInventory();
+}
+
+async function saveInventory(){
+  setSaveStatus('Saving inventory...');
+  try{
+    var r=await fetch('/.netlify/functions/inventory',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(inventory)});
+    var d=await r.json();if(!r.ok||d.error)throw new Error(d.error||'Save failed');
+    setSaveStatus('\u2713 Inventory saved');
+  }catch(e){setSaveStatus('\u2717 '+e.message);}
+}
+
+function invStatus(item){
+  var s=parseFloat(item.inStock)||0,m=parseFloat(item.minStock)||0;
+  if(s<=0)          return{label:'Out of Stock',color:'#e74c3c',cls:'reorder'};
+  if(s<=m)          return{label:'Reorder Now', color:'#e74c3c',cls:'reorder'};
+  if(s<=m*1.5)      return{label:'Low Stock',   color:'#f39c12',cls:'low'};
+  return               {label:'In Stock',    color:'#27ae60',cls:'ok'};
+}
+
+function renderInventory(){
+  var tbody=document.getElementById('inv-tbody');if(!tbody)return;
+  var items=inventory.items||[];
+  var stats={total:items.length,ok:0,low:0,reorder:0};
+  var reorderItems=[];
+  if(!items.length){
+    tbody.innerHTML='<tr><td colspan="8" style="padding:32px;text-align:center;color:#999;font-size:13px;">No items yet. Click + Add Item to get started.</td></tr>';
+  }else{
+    tbody.innerHTML=items.map(function(item,i){
+      var st=invStatus(item);
+      if(st.cls==='ok')stats.ok++;else if(st.cls==='low')stats.low++;else{stats.reorder++;reorderItems.push(item);}
+      var reorderBtn=item.reorderUrl
+        ?'<a href="'+item.reorderUrl+'" target="_blank" style="font-family:\'DM Mono\',monospace;font-size:9px;letter-spacing:0.1em;text-transform:uppercase;color:var(--green);text-decoration:none;padding:3px 8px;border:1px solid var(--green);border-radius:4px;white-space:nowrap;">Order \u2192</a>'
+        :'<span style="color:#ccc;font-size:11px;">\u2014</span>';
+      return '<tr style="border-bottom:1px solid var(--rule);">'+
+        '<td style="padding:10px 14px;"><div style="font-weight:500;font-size:13px;">'+(item.name||'\u2014')+'</div>'+(item.notes?'<div style="font-size:11px;color:var(--ink-light);margin-top:2px;">'+item.notes+'</div>':'')+'</td>'+
+        '<td style="padding:10px 14px;font-size:12px;color:var(--ink-mid);">'+(item.category||'\u2014')+'</td>'+
+        '<td style="padding:10px 14px;text-align:center;"><input type="number" min="0" value="'+(item.inStock||0)+'" style="width:60px;text-align:center;border:1px solid var(--rule);border-radius:4px;padding:4px 6px;font-size:13px;" onchange="inventory.items['+i+'].inStock=parseFloat(this.value)||0;renderInventory()" onclick="this.select()"><span style="font-size:10px;color:var(--ink-light);margin-left:4px;">'+(item.unit||'')+'</span></td>'+
+        '<td style="padding:10px 14px;text-align:center;font-family:\'DM Mono\',monospace;font-size:13px;">'+(item.minStock||0)+'</td>'+
+        '<td style="padding:10px 14px;text-align:center;"><span style="font-family:\'DM Mono\',monospace;font-size:9px;letter-spacing:0.1em;text-transform:uppercase;padding:3px 9px;border-radius:10px;background:'+st.color+'18;color:'+st.color+';border:1px solid '+st.color+'40;">'+st.label+'</span></td>'+
+        '<td style="padding:10px 14px;font-size:12px;color:var(--ink-mid);">'+(item.supplier||'\u2014')+'</td>'+
+        '<td style="padding:10px 14px;text-align:center;">'+reorderBtn+'</td>'+
+        '<td style="padding:10px 14px;text-align:right;white-space:nowrap;">'+
+          '<button onclick="editInvItem('+i+')" style="font-size:11px;background:none;border:none;cursor:pointer;color:var(--ink-light);padding:3px 6px;" title="Edit">&#9998;</button>'+
+          '<button onclick="deleteInvItem('+i+')" style="font-size:11px;background:none;border:none;cursor:pointer;color:#e74c3c;padding:3px 6px;" title="Delete">&#10005;</button>'+
+        '</td></tr>';
+    }).join('');
+  }
+  document.getElementById('inv-stat-total').textContent=stats.total;
+  document.getElementById('inv-stat-ok').textContent=stats.ok;
+  document.getElementById('inv-stat-low').textContent=stats.low;
+  document.getElementById('inv-stat-reorder').textContent=stats.reorder;
+  var banner=document.getElementById('reorder-banner');
+  var list=document.getElementById('reorder-list');
+  if(reorderItems.length){
+    banner.style.display='block';
+    list.innerHTML=reorderItems.map(function(item){
+      var link=item.reorderUrl?' \u2014 <a href="'+item.reorderUrl+'" target="_blank" style="color:#bf360c;font-weight:600;">Order '+(item.reorderQty||'')+(item.unit?' '+item.unit:'')+' from '+(item.supplier||'supplier')+' \u2192</a>':(item.supplier?' \u2014 Supplier: '+item.supplier:'');
+      return '<div>\u26a0 <strong>'+item.name+'</strong> ('+(item.inStock||0)+(item.unit?' '+item.unit:'')+' remaining)'+link+'</div>';
+    }).join('');
+  }else{banner.style.display='none';}
+}
+
+function openAddInvItem(){
+  invEditIdx=null;
+  document.getElementById('inv-modal-title').textContent='Add Inventory Item';
+  ['inv-f-name','inv-f-category','inv-f-unit','inv-f-supplier','inv-f-reorderurl','inv-f-notes'].forEach(function(id){document.getElementById(id).value='';});
+  document.getElementById('inv-f-instock').value=0;
+  document.getElementById('inv-f-minstock').value=1;
+  document.getElementById('inv-f-reorderqty').value=1;
+  document.getElementById('inv-modal-overlay').style.display='flex';
+}
+
+function editInvItem(i){
+  invEditIdx=i;var item=inventory.items[i];
+  document.getElementById('inv-modal-title').textContent='Edit Item';
+  document.getElementById('inv-f-name').value=item.name||'';
+  document.getElementById('inv-f-category').value=item.category||'';
+  document.getElementById('inv-f-unit').value=item.unit||'';
+  document.getElementById('inv-f-instock').value=item.inStock||0;
+  document.getElementById('inv-f-minstock').value=item.minStock||1;
+  document.getElementById('inv-f-supplier').value=item.supplier||'';
+  document.getElementById('inv-f-reorderqty').value=item.reorderQty||1;
+  document.getElementById('inv-f-reorderurl').value=item.reorderUrl||'';
+  document.getElementById('inv-f-notes').value=item.notes||'';
+  document.getElementById('inv-modal-overlay').style.display='flex';
+}
+
+function deleteInvItem(i){
+  if(!confirm('Delete '+inventory.items[i].name+'?'))return;
+  inventory.items.splice(i,1);renderInventory();
+}
+
+function closeInvModal(){document.getElementById('inv-modal-overlay').style.display='none';}
+
+function saveInvItem(){
+  var name=document.getElementById('inv-f-name').value.trim();
+  if(!name){alert('Item name is required');return;}
+  var item={
+    id:invEditIdx!==null?inventory.items[invEditIdx].id:'inv-'+Date.now(),
+    name:name,
+    category:document.getElementById('inv-f-category').value.trim(),
+    unit:document.getElementById('inv-f-unit').value.trim(),
+    inStock:parseFloat(document.getElementById('inv-f-instock').value)||0,
+    minStock:parseFloat(document.getElementById('inv-f-minstock').value)||1,
+    supplier:document.getElementById('inv-f-supplier').value.trim(),
+    reorderQty:parseFloat(document.getElementById('inv-f-reorderqty').value)||1,
+    reorderUrl:document.getElementById('inv-f-reorderurl').value.trim(),
+    notes:document.getElementById('inv-f-notes').value.trim()
+  };
+  if(invEditIdx!==null){inventory.items[invEditIdx]=item;}else{inventory.items.push(item);}
+  closeInvModal();renderInventory();
+}
+
+// Hook into showTab to load inventory on first open
+(function(){
+  var _origShowTab=window.showTab;
+  if(typeof _origShowTab==='function'){
+    window.showTab=function(tab){
+      _origShowTab(tab);
+      if(tab==='inventory'&&inventory.items.length===0)loadInventory();
+    };
+  }
+})();
+
 </script>
+
+<!-- INVENTORY -->
+<div class="panel" id="panel-inventory">
+  <div class="panel-max">
+    <div id="reorder-banner" style="display:none;background:#fff8e1;border:1px solid #ffd54f;border-radius:6px;padding:14px 18px;margin-bottom:20px;">
+      <div style="font-family:'DM Mono',monospace;font-size:9px;letter-spacing:0.2em;text-transform:uppercase;color:#e65100;margin-bottom:8px;font-weight:600;">&#9888; Reorder Required</div>
+      <div id="reorder-list" style="font-size:13px;color:#bf360c;line-height:1.8;"></div>
+    </div>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;">
+      <div class="slabel" style="margin:0;flex:1;">Supply Inventory</div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-sm" onclick="openAddInvItem()">+ Add Item</button>
+        <button class="btn btn-sm btn-primary" onclick="saveInventory()">Save Inventory</button>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:20px;">
+      <div style="background:var(--card);border:1px solid var(--rule);border-radius:6px;padding:14px;text-align:center;">
+        <div style="font-family:'DM Mono',monospace;font-size:9px;letter-spacing:0.2em;text-transform:uppercase;color:var(--ink-light);margin-bottom:4px;">Total Items</div>
+        <div style="font-size:22px;font-weight:600;" id="inv-stat-total">—</div>
+      </div>
+      <div style="background:var(--card);border:1px solid var(--rule);border-radius:6px;padding:14px;text-align:center;">
+        <div style="font-family:'DM Mono',monospace;font-size:9px;letter-spacing:0.2em;text-transform:uppercase;color:#27ae60;margin-bottom:4px;">In Stock</div>
+        <div style="font-size:22px;font-weight:600;color:#27ae60;" id="inv-stat-ok">—</div>
+      </div>
+      <div style="background:var(--card);border:1px solid var(--rule);border-radius:6px;padding:14px;text-align:center;">
+        <div style="font-family:'DM Mono',monospace;font-size:9px;letter-spacing:0.2em;text-transform:uppercase;color:#f39c12;margin-bottom:4px;">Low Stock</div>
+        <div style="font-size:22px;font-weight:600;color:#f39c12;" id="inv-stat-low">—</div>
+      </div>
+      <div style="background:var(--card);border:1px solid var(--rule);border-radius:6px;padding:14px;text-align:center;">
+        <div style="font-family:'DM Mono',monospace;font-size:9px;letter-spacing:0.2em;text-transform:uppercase;color:#e74c3c;margin-bottom:4px;">Reorder Now</div>
+        <div style="font-size:22px;font-weight:600;color:#e74c3c;" id="inv-stat-reorder">—</div>
+      </div>
+    </div>
+    <div style="background:var(--card);border:1px solid var(--rule);border-radius:6px;overflow:hidden;">
+      <table style="width:100%;border-collapse:collapse;">
+        <thead>
+          <tr style="background:#f7f7f5;border-bottom:1px solid var(--rule);">
+            <th style="padding:10px 14px;text-align:left;font-family:'DM Mono',monospace;font-size:9px;letter-spacing:0.18em;text-transform:uppercase;color:var(--ink-light);font-weight:400;">Item</th>
+            <th style="padding:10px 14px;text-align:left;font-family:'DM Mono',monospace;font-size:9px;letter-spacing:0.18em;text-transform:uppercase;color:var(--ink-light);font-weight:400;">Category</th>
+            <th style="padding:10px 14px;text-align:center;font-family:'DM Mono',monospace;font-size:9px;letter-spacing:0.18em;text-transform:uppercase;color:var(--ink-light);font-weight:400;">In Stock</th>
+            <th style="padding:10px 14px;text-align:center;font-family:'DM Mono',monospace;font-size:9px;letter-spacing:0.18em;text-transform:uppercase;color:var(--ink-light);font-weight:400;">Min Stock</th>
+            <th style="padding:10px 14px;text-align:center;font-family:'DM Mono',monospace;font-size:9px;letter-spacing:0.18em;text-transform:uppercase;color:var(--ink-light);font-weight:400;">Status</th>
+            <th style="padding:10px 14px;text-align:left;font-family:'DM Mono',monospace;font-size:9px;letter-spacing:0.18em;text-transform:uppercase;color:var(--ink-light);font-weight:400;">Supplier</th>
+            <th style="padding:10px 14px;text-align:center;font-family:'DM Mono',monospace;font-size:9px;letter-spacing:0.18em;text-transform:uppercase;color:var(--ink-light);font-weight:400;">Reorder</th>
+            <th style="padding:10px 14px;"></th>
+          </tr>
+        </thead>
+        <tbody id="inv-tbody">
+          <tr><td colspan="8" style="padding:32px;text-align:center;color:var(--ink-light);font-size:13px;">Loading inventory...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- INVENTORY MODAL -->
+<div class="modal-overlay" id="inv-modal-overlay" style="display:none;">
+  <div class="modal" style="max-width:520px;">
+    <div class="modal-hdr">
+      <span id="inv-modal-title">Add Inventory Item</span>
+      <button class="modal-close" onclick="closeInvModal()">&#10005;</button>
+    </div>
+    <div class="modal-body">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+        <div class="field-wrap" style="grid-column:1/-1;">
+          <label class="field-label">Item Name *</label>
+          <input type="text" class="field-input" id="inv-f-name" placeholder="e.g. Black Zip Ties 12in">
+        </div>
+        <div class="field-wrap">
+          <label class="field-label">Category</label>
+          <input type="text" class="field-input" id="inv-f-category" placeholder="e.g. Rigging, Tools">
+        </div>
+        <div class="field-wrap">
+          <label class="field-label">Unit</label>
+          <input type="text" class="field-input" id="inv-f-unit" placeholder="pack, each, roll, box">
+        </div>
+        <div class="field-wrap">
+          <label class="field-label">In Stock</label>
+          <input type="number" class="field-input" id="inv-f-instock" min="0" value="0">
+        </div>
+        <div class="field-wrap">
+          <label class="field-label">Min Stock (Reorder Threshold)</label>
+          <input type="number" class="field-input" id="inv-f-minstock" min="0" value="1">
+        </div>
+        <div class="field-wrap">
+          <label class="field-label">Supplier</label>
+          <input type="text" class="field-input" id="inv-f-supplier" placeholder="Amazon, Home Depot...">
+        </div>
+        <div class="field-wrap">
+          <label class="field-label">Reorder Qty</label>
+          <input type="number" class="field-input" id="inv-f-reorderqty" min="1" value="1">
+        </div>
+        <div class="field-wrap" style="grid-column:1/-1;">
+          <label class="field-label">Reorder URL</label>
+          <input type="text" class="field-input" id="inv-f-reorderurl" placeholder="https://...">
+        </div>
+        <div class="field-wrap" style="grid-column:1/-1;">
+          <label class="field-label">Notes</label>
+          <input type="text" class="field-input" id="inv-f-notes" placeholder="Optional notes">
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-sm" onclick="closeInvModal()">Cancel</button>
+      <button class="btn btn-sm btn-primary" onclick="saveInvItem()">Save Item</button>
+    </div>
+  </div>
+</div>
 </body>
 </html>
